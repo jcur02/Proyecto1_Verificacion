@@ -110,3 +110,17 @@ class tx_monitor;
     end
   endtask
 endclass
+
+// APB Driver/Monitor
+class apb_agent;
+  virtual apb_if vif;
+  function new(virtual apb_if vif); 
+    this.vif = vif; 
+  endfunction
+  task write(int unsigned addr, int unsigned data); 
+    vif.write(addr, data);
+  endtask
+  task read (int unsigned addr, output int unsigned data); 
+    vif.read(addr, data); 
+  endtask
+endclass
