@@ -89,3 +89,24 @@ class rx_driver;
   endtask
 endclass
 
+// TX Monitor
+class tx_monitor;
+  virtual md_tx_if vif;
+  mailbox #(logic [31:0]) m_data;
+  mailbox #(int)          m_size, m_off;
+  function new(virtual md_tx_if vif);
+    this.vif=vif; m_data=new(); m_size=new(); m_off=new();
+  endfunction
+  task run();
+    bit fired_d;
+    forever begin
+      @(posedge vif.clk);
+      fired_d = vif.valid && vif.ready;
+      if (fired_d) begin
+        m_data.put(vif.data);
+        m_size.put(vif.size);
+        m_off.put(vif.offset);
+      end
+    end
+  endtask
+endclass
