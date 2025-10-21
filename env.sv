@@ -19,7 +19,9 @@ class rx_item;
   constraint c_sz { tr.rx_size inside {1,2,4}; }
   constraint c_of { tr.rx_offset inside {[0:3]}; }
   constraint c_legal { (tr.rx_size!=4) || (tr.rx_offset==0); }
-  function void randomize_data(); tr.data = $urandom(); endfunction
+  function void randomize_data(); 
+    tr.data = $urandom(); 
+  endfunction
 endclass
 
 // Interfaces
@@ -193,3 +195,165 @@ class scoreboard;
     cov.sample(tx_sz, tx_of, rx.rx_size, rx.rx_offset);
   endtask
 endclass
+
+class rand_cfg;
+  rand int unsigned num_rx;    
+  rand int unsigned gap_min;
+  rand int unsigned gap_max;
+  rand ctrl_item_s  ctrl;
+
+  constraint c_num  { num_rx inside {[2:32]}; } // cantidad de datos a entrar
+  constraint c_gap1 { gap_min inside {[0:10]}; } // tiempo minimo entre envio
+  constraint c_gap2 { gap_max inside {[gap_min:20]}; } // tiempo maximo entre envio
+  constraint c_ctrl { ctrl.ctrl_size inside {1,2,4}; ctrl.ctrl_offset inside {[0:3]}; } // size y offset de control
+  constraint c_ctrl_legal { (ctrl.ctrl_size!=4) || (ctrl.ctrl_offset==0); } // asegurarse que sea correcto
+endclass
+
+// Top
+module tb_aligner_rand;
+
+  function automatic bit is_rx_legal(aligner_pkg::rx_item_s rx);
+    bit size_ok, off_ok, fit_ok, align4_ok;
+    size_ok   = (rx.rx_size==1) || (rx.rx_size==2) || (rx.rx_size==4);
+    off_ok    = (rx.rx_offset>=0) && (rx.rx_offset<=3);
+    fit_ok    = ((rx.rx_offset + rx.rx_size) <= 4);   
+    align4_ok = !(rx.rx_size==4 && rx.rx_offset!=0);  
+    return size_ok && off_ok && fit_ok && align4_ok;
+  endfunction
+
+  // Parametros
+  localparam int DW=32; localparam int AW=16; localparam int APBDW=32;
+  localparam int OW=(DW<=8)?1:$clog2(DW/8);
+  localparam int SW=$clog2(DW/8)+1;
+
+  // clock y reset
+  logic clk=0, reset_n=0; always #5 clk=~clk; // 100 MHz
+
+  // Creacion interfaces
+  apb_if   #(AW,APBDW) apb(clk);
+  md_rx_if #(DW,OW,SW) md_rx(clk);
+  md_tx_if #(DW,OW,SW) md_tx(clk);
+
+  // valores iniciales
+  initial begin
+    md_tx.ready = 1'b1; 
+    md_rx.valid = 1'b0; md_rx.data='0; md_rx.size='0; md_rx.offset='0;
+  end
+
+  // DUT 
+  cfs_aligner #(.ALGN_DATA_WIDTH(DW), .FIFO_DEPTH(8)) dut (
+    .clk(clk), .reset_n(reset_n),
+    .paddr(apb.paddr), .pwrite(apb.pwrite), .psel(apb.psel), .penable(apb.penable),
+    .pwdata(apb.pwdata), .pready(apb.pready), .prdata(apb.prdata), .pslverr(apb.pslverr),
+    .md_rx_valid(md_rx.valid), .md_rx_data(md_rx.data), .md_rx_offset(md_rx.offset), .md_rx_size(md_rx.size), .md_rx_ready(md_rx.ready), .md_rx_err(md_rx.err),
+    .md_tx_valid(md_tx.valid), .md_tx_data(md_tx.data), .md_tx_offset(md_tx.offset), .md_tx_size(md_tx.size), .md_tx_ready(md_tx.ready), .md_tx_err(md_tx.err),
+    .irq()
+  );
+
+  // VCD
+  initial begin
+    $dumpfile("aligner_rand.vcd");
+    $dumpvars(0, tb_aligner_rand);
+  end
+
+  // Componentes
+  apb_agent apb_ag = new(apb);
+  rx_driver drv    = new(md_rx);
+  tx_monitor mon   = new(md_tx);
+  scoreboard scb   = new(apb_ag);
+  rand_cfg  cfg;
+
+  // run
+  initial fork mon.run(); join_none
+
+  // Reset
+  task automatic do_reset();
+    begin
+      repeat(5) @(negedge clk); reset_n<=0;
+      repeat(5) @(negedge clk); reset_n<=1;
+    end
+  endtask
+
+  // Random size
+  function automatic int pick_size();
+    int sel; sel=$urandom_range(0,2);
+    return (sel==0)?1:((sel==1)?2:4);
+  endfunction
+
+  // TEST
+  initial begin : MAIN
+    int seed;
+    int i, b, t;
+    int gap_min, gap_max, num_rx;
+    int ctrl_size, ctrl_off;
+    rx_item it;
+    rx_item_s rx_s;
+    int beats_caught, gap;
+    logic [31:0] tdata; int tsz, tof;
+
+    // Seed
+    if ($value$plusargs("seed=%d", seed)) begin void'($urandom(seed)); end
+    else begin seed = $urandom(); end
+    $display("[TB] seed=%0d", seed);
+
+    // Open CSV
+    scb.logger.open("report.csv");
+
+    // Reset
+    do_reset();
+
+    // Randomizar configuracion 
+    cfg = new();
+    if (!cfg.randomize()) $fatal("cfg randomize failed");
+    scb.configure_ctrl(cfg.ctrl);
+    $display("[CFG] initial ctrl(size=%0d,off=%0d) num_rx=%0d", cfg.ctrl.ctrl_size, cfg.ctrl.ctrl_offset, cfg.num_rx);
+
+    // Tiempos de espera randomizados
+    gap_min = cfg.gap_min; gap_max = cfg.gap_max; num_rx = cfg.num_rx;
+
+    // Generar RX items
+    for (i=0; i<num_rx; i++) begin
+      ctrl_item_s dyn_ctrl;
+      dyn_ctrl.ctrl_size   = pick_size();
+      dyn_ctrl.ctrl_offset = (dyn_ctrl.ctrl_size==4) ? 0 : $urandom_range(0,3);
+
+      if ((i % 8) == 0) begin
+        dyn_ctrl.ctrl_size   = 4;
+        dyn_ctrl.ctrl_offset = 0;
+      end
+      scb.configure_ctrl(dyn_ctrl);
+      $display("[CTRL] iter=%0d -> size=%0d off=%0d", i, dyn_ctrl.ctrl_size, dyn_ctrl.ctrl_offset);
+
+      // Enviar RX item
+      it = new(); void'(it.randomize()); it.randomize_data();
+      drv.send(it);
+      // Loggear RX valido
+      if (is_rx_legal(it.tr)) begin
+        scb.log_rx(it.tr);
+      end
+
+      // Loggear cuando haya un TX valido
+      beats_caught = 0;
+      for (b=0; b<4; b++) begin
+        t=20;
+        while (t>0) begin
+          if (mon.m_data.try_get(tdata)) begin
+            mon.m_size.get(tsz); mon.m_off.get(tof);
+            scb.check_and_log("tx", it.tr, tdata, tsz, tof);
+            beats_caught++;
+            break;
+          end
+          @(posedge clk); t--; 
+        end
+        if (t==0) break; 
+      end
+
+      // Tiempos de espera
+      gap = gap_min + $urandom_range(0, (gap_max-gap_min));
+      repeat(gap) @(negedge clk);
+    end
+
+    $display("[TB] Completed randomized run.");
+    #100 $finish;
+  end
+endmodule
