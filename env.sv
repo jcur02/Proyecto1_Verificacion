@@ -1,29 +1,5 @@
 `timescale 1ns/1ps
 
-// Transacciones
-package aligner_pkg;
-  typedef struct packed {
-    logic [31:0] data;
-    logic [1:0]  rx_offset;   
-    logic [2:0]  rx_size;     
-  } rx_item_s; // Item que se enviará al RX
-
-  typedef struct packed {
-    logic [1:0]  ctrl_offset; 
-    logic [2:0]  ctrl_size;   
-  } ctrl_item_s; // Item que se usará para el control
-endpackage
-
-class rx_item;
-  rand rx_item_s tr;
-  constraint c_sz { tr.rx_size inside {1,2,4}; }
-  constraint c_of { tr.rx_offset inside {[0:3]}; }
-  constraint c_legal { (tr.rx_size!=4) || (tr.rx_offset==0); }
-  function void randomize_data(); 
-    tr.data = $urandom(); 
-  endfunction
-endclass
-
 // Interfaces
 // Interfaz APB para la comunicacion con los registros
 interface apb_if #(parameter AW=16, DW=32) (input logic clk);
@@ -39,6 +15,7 @@ interface apb_if #(parameter AW=16, DW=32) (input logic clk);
     paddr<=addr; pwdata<=data; pwrite<=1; psel<=1; penable<=0;
     @(negedge clk);
     penable<=1; while(!pready) @(negedge clk);
+    @(negedge clk);
     psel<=0; penable<=0; pwrite<=0; paddr<='0; pwdata<='0;
   endtask
 
@@ -73,58 +50,82 @@ interface md_tx_if #(parameter DW=32, OW=$clog2(DW/8), SW=$clog2(DW/8)+1) (input
   logic                    err;
 endinterface
 
-// RX Driver
-class rx_driver;
-  virtual md_rx_if vif;
-  function new(virtual md_rx_if vif); 
-    this.vif=vif; 
-  endfunction
+// Paquetes
+package aligner_pkg;
+  typedef struct packed {
+    logic [31:0] data;
+    logic [1:0]  rx_offset;   
+    logic [2:0]  rx_size;     
+  } rx_item_s; // Item que se enviará al RX
 
-  task send(rx_item item);
-    @(negedge vif.clk);
-    vif.data   <= item.tr.data;
-    vif.size   <= item.tr.rx_size;
-    vif.offset <= item.tr.rx_offset;
-    vif.valid  <= 1'b1;
-    while(!vif.ready) @(negedge vif.clk);
-    vif.valid <= 1'b0;
-  endtask
-endclass
+  typedef struct packed {
+    logic [1:0]  ctrl_offset; 
+    logic [2:0]  ctrl_size;   
+  } ctrl_item_s; // Item que se usará para el control
+endpackage
 
-// TX Monitor
-class tx_monitor;
-  virtual md_tx_if vif;
-  mailbox #(logic [31:0]) m_data;
-  mailbox #(int)          m_size, m_off;
-  function new(virtual md_tx_if vif);
-    this.vif=vif; m_data=new(); m_size=new(); m_off=new();
-  endfunction
-  task run();
-    bit fired_d;
-    forever begin
-      @(posedge vif.clk);
-      fired_d = vif.valid && vif.ready;
-      if (fired_d) begin
-        m_data.put(vif.data);
-        m_size.put(vif.size);
-        m_off.put(vif.offset);
-      end
+package aligner_ref;
+  function automatic int compute(
+      input  logic [31:0] data,
+      input  int          rx_size, rx_off,
+      input  int          ctrl_size, ctrl_off,
+      output logic [31:0] beats [4],
+      output int          tx_off_each [4],
+      output int          tx_size_each [4]
+  );
+    logic [31:0] window, mask, piece;
+    int n, remain, consumed, chunk;
+
+    window   = data >> (8*rx_off);
+    n        = 0;
+    remain   = rx_size;
+    consumed = 0;
+
+    while (remain > 0) begin
+      chunk = (ctrl_size <= remain) ? ctrl_size : remain;
+      case (chunk)
+        1: mask = 32'h000000FF;
+        2: mask = 32'h0000FFFF;
+        3: mask = 32'h00FFFFFF;
+        default: mask = 32'hFFFFFFFF;
+      endcase
+      piece = (window >> (8*consumed)) & mask;
+      beats[n]        = piece << (8*ctrl_off);
+      tx_off_each[n]  = ctrl_off;
+      tx_size_each[n] = chunk;
+      n++;
+      remain   -= chunk;
+      consumed += chunk;
     end
-  endtask
+    return n;
+  endfunction
+endpackage
+
+import aligner_pkg::*;
+import aligner_ref::*;
+
+// -------------------- Clases --------------------
+class rand_cfg;
+  rand int unsigned num_rx;    
+  rand int unsigned gap_min;
+  rand int unsigned gap_max;
+  rand ctrl_item_s  ctrl;
+
+  constraint c_num  { num_rx inside {[2:32]}; } // cantidad de datos a entrar
+  constraint c_gap1 { gap_min inside {[0:10]}; } // tiempo minimo entre envio
+  constraint c_gap2 { gap_max inside {[gap_min:20]}; } // tiempo maximo entre envio
+  constraint c_ctrl { ctrl.ctrl_size inside {1,2,4}; ctrl.ctrl_offset inside {[0:3]}; } // size y offset de control
+  constraint c_ctrl_legal { (ctrl.ctrl_size!=4) || (ctrl.ctrl_offset==0); } // asegurarse que sea correcto
+
 endclass
 
-// APB Driver/Monitor
-class apb_agent;
-  virtual apb_if vif;
-  function new(virtual apb_if vif); 
-    this.vif = vif; 
-  endfunction
-  task write(int unsigned addr, int unsigned data); 
-    vif.write(addr, data);
-  endtask
-  task read (int unsigned addr, output int unsigned data); 
-    vif.read(addr, data); 
-  endtask
+class rx_item;
+  rand rx_item_s tr;
+  constraint c_sz { tr.rx_size inside {1,2,4}; }
+  constraint c_of { tr.rx_offset inside {[0:3]}; }
+
+  constraint c_legal { (tr.rx_size!=4) || (tr.rx_offset==0); }
+  function void randomize_data(); tr.data = $urandom(); endfunction
 endclass
 
 // Logger
@@ -157,6 +158,51 @@ class coverage_cov;
   function void sample(int c_sz, int c_of, int r_sz, int r_of);
     csz=c_sz; cof=c_of; rsz=r_sz; rof=r_of; cg.sample();
   endfunction
+endclass
+
+// APB Driver/Monitor
+class apb_agent;
+  virtual apb_if vif;
+  function new(virtual apb_if vif); this.vif = vif; endfunction
+  task write(int unsigned addr, int unsigned data); vif.write(addr, data); endtask
+  task read (int unsigned addr, output int unsigned data); vif.read(addr, data); endtask
+endclass
+
+// RX Driver
+class rx_driver;
+  virtual md_rx_if vif;
+  function new(virtual md_rx_if vif); this.vif=vif; endfunction
+  task send(rx_item item);
+    @(negedge vif.clk);
+    vif.data   <= item.tr.data;
+    vif.size   <= item.tr.rx_size;
+    vif.offset <= item.tr.rx_offset;
+    vif.valid  <= 1'b1;
+    while(!vif.ready) @(negedge vif.clk);
+    vif.valid <= 1'b0;
+  endtask
+endclass
+
+// TX Monitor
+class tx_monitor;
+  virtual md_tx_if vif;
+  mailbox #(logic [31:0]) m_data;
+  mailbox #(int)          m_size, m_off;
+  function new(virtual md_tx_if vif);
+    this.vif=vif; m_data=new(); m_size=new(); m_off=new();
+  endfunction
+  task run();
+    bit fired_d;
+    forever begin
+      @(posedge vif.clk);
+      fired_d = vif.valid && vif.ready;
+      if (fired_d) begin
+        m_data.put(vif.data);
+        m_size.put(vif.size);
+        m_off.put(vif.offset);
+      end
+    end
+  endtask
 endclass
 
 // Scoreboard
@@ -196,20 +242,7 @@ class scoreboard;
   endtask
 endclass
 
-class rand_cfg;
-  rand int unsigned num_rx;    
-  rand int unsigned gap_min;
-  rand int unsigned gap_max;
-  rand ctrl_item_s  ctrl;
-
-  constraint c_num  { num_rx inside {[2:32]}; } // cantidad de datos a entrar
-  constraint c_gap1 { gap_min inside {[0:10]}; } // tiempo minimo entre envio
-  constraint c_gap2 { gap_max inside {[gap_min:20]}; } // tiempo maximo entre envio
-  constraint c_ctrl { ctrl.ctrl_size inside {1,2,4}; ctrl.ctrl_offset inside {[0:3]}; } // size y offset de control
-  constraint c_ctrl_legal { (ctrl.ctrl_size!=4) || (ctrl.ctrl_offset==0); } // asegurarse que sea correcto
-endclass
-
-// Top
+// env
 module tb_aligner_rand;
 
   function automatic bit is_rx_legal(aligner_pkg::rx_item_s rx);
@@ -220,23 +253,21 @@ module tb_aligner_rand;
     align4_ok = !(rx.rx_size==4 && rx.rx_offset!=0);  
     return size_ok && off_ok && fit_ok && align4_ok;
   endfunction
-
-  // Parametros
+ 
   localparam int DW=32; localparam int AW=16; localparam int APBDW=32;
   localparam int OW=(DW<=8)?1:$clog2(DW/8);
   localparam int SW=$clog2(DW/8)+1;
 
-  // clock y reset
+  // Clock y reset
   logic clk=0, reset_n=0; always #5 clk=~clk; // 100 MHz
 
-  // Creacion interfaces
+  // Interfaces
   apb_if   #(AW,APBDW) apb(clk);
   md_rx_if #(DW,OW,SW) md_rx(clk);
   md_tx_if #(DW,OW,SW) md_tx(clk);
 
-  // valores iniciales
   initial begin
-    md_tx.ready = 1'b1; 
+    md_tx.ready = 1'b1; // always ready
     md_rx.valid = 1'b0; md_rx.data='0; md_rx.size='0; md_rx.offset='0;
   end
 
@@ -263,7 +294,7 @@ module tb_aligner_rand;
   scoreboard scb   = new(apb_ag);
   rand_cfg  cfg;
 
-  // run
+  // run monitor
   initial fork mon.run(); join_none
 
   // Reset
@@ -274,13 +305,12 @@ module tb_aligner_rand;
     end
   endtask
 
-  // Random size
   function automatic int pick_size();
     int sel; sel=$urandom_range(0,2);
     return (sel==0)?1:((sel==1)?2:4);
   endfunction
 
-  // TEST
+  // test
   initial begin : MAIN
     int seed;
     int i, b, t;
@@ -291,20 +321,22 @@ module tb_aligner_rand;
     int beats_caught, gap;
     logic [31:0] tdata; int tsz, tof;
 
-    // Seed
+    // semilla
     if ($value$plusargs("seed=%d", seed)) begin void'($urandom(seed)); end
     else begin seed = $urandom(); end
     $display("[TB] seed=%0d", seed);
 
-    // Open CSV
+    // CSV
     scb.logger.open("report.csv");
 
     // Reset
     do_reset();
 
-    // Randomizar configuracion 
+    // Randomizar global cfg
     cfg = new();
     if (!cfg.randomize()) $fatal("cfg randomize failed");
+
+    // control
     scb.configure_ctrl(cfg.ctrl);
     $display("[CFG] initial ctrl(size=%0d,off=%0d) num_rx=%0d", cfg.ctrl.ctrl_size, cfg.ctrl.ctrl_offset, cfg.num_rx);
 
@@ -324,15 +356,12 @@ module tb_aligner_rand;
       scb.configure_ctrl(dyn_ctrl);
       $display("[CTRL] iter=%0d -> size=%0d off=%0d", i, dyn_ctrl.ctrl_size, dyn_ctrl.ctrl_offset);
 
-      // Enviar RX item
       it = new(); void'(it.randomize()); it.randomize_data();
       drv.send(it);
-      // Loggear RX valido
       if (is_rx_legal(it.tr)) begin
         scb.log_rx(it.tr);
       end
 
-      // Loggear cuando haya un TX valido
       beats_caught = 0;
       for (b=0; b<4; b++) begin
         t=20;
@@ -348,7 +377,6 @@ module tb_aligner_rand;
         if (t==0) break; 
       end
 
-      // Tiempos de espera
       gap = gap_min + $urandom_range(0, (gap_max-gap_min));
       repeat(gap) @(negedge clk);
     end
