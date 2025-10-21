@@ -37,7 +37,6 @@ interface apb_if #(parameter AW=16, DW=32) (input logic clk);
     paddr<=addr; pwdata<=data; pwrite<=1; psel<=1; penable<=0;
     @(negedge clk);
     penable<=1; while(!pready) @(negedge clk);
-    @(negedge clk);
     psel<=0; penable<=0; pwrite<=0; paddr<='0; pwdata<='0;
   endtask
 
@@ -71,3 +70,22 @@ interface md_tx_if #(parameter DW=32, OW=$clog2(DW/8), SW=$clog2(DW/8)+1) (input
   logic                    ready;
   logic                    err;
 endinterface
+
+// RX Driver
+class rx_driver;
+  virtual md_rx_if vif;
+  function new(virtual md_rx_if vif); 
+    this.vif=vif; 
+  endfunction
+
+  task send(rx_item item);
+    @(negedge vif.clk);
+    vif.data   <= item.tr.data;
+    vif.size   <= item.tr.rx_size;
+    vif.offset <= item.tr.rx_offset;
+    vif.valid  <= 1'b1;
+    while(!vif.ready) @(negedge vif.clk);
+    vif.valid <= 1'b0;
+  endtask
+endclass
+
