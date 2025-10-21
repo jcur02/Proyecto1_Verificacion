@@ -124,3 +124,72 @@ class apb_agent;
     vif.read(addr, data); 
   endtask
 endclass
+
+// Logger
+class csv_logger;
+  integer fd;
+  function void open(string path="report.csv");
+    fd = $fopen(path, "w");
+    $fdisplay(fd, "time,phase,rx_data,rx_size,rx_offset,tx_data,tx_size,tx_offset,status,irq");
+  endfunction
+  function void log(string phase,
+                    logic [31:0] rx_d, int rx_sz, int rx_of,
+                    logic [31:0] tx_d, int tx_sz, int tx_of,
+                    logic [31:0] status, logic [31:0] irq);
+    $fdisplay(fd, "%0t,%s,0x%08x,%0d,%0d,0x%08x,%0d,%0d,0x%08x,0x%08x",
+              $time, phase, rx_d, rx_sz, rx_of, tx_d, tx_sz, tx_of, status, irq);
+  endfunction
+endclass
+
+// Coverage group
+class coverage_cov;
+  int csz, cof, rsz, rof;
+  covergroup cg;
+    coverpoint csz { bins s1={1}; bins s2={2}; bins s4={4}; } // control size
+    coverpoint cof { bins o[]={[0:3]}; } // control offset
+    coverpoint rsz { bins r1={1}; bins r2={2}; bins r4={4}; } // rx size
+    coverpoint rof { bins ro[]={[0:3]}; } // rx offset
+    cross csz, cof, rsz, rof;
+  endgroup
+  function new(); cg=new; endfunction
+  function void sample(int c_sz, int c_of, int r_sz, int r_of);
+    csz=c_sz; cof=c_of; rsz=r_sz; rof=r_of; cg.sample();
+  endfunction
+endclass
+
+// Scoreboard
+class scoreboard;
+  apb_agent   apb;
+  csv_logger  logger;
+  coverage_cov cov;
+  int unsigned ADDR_STATUS=32'h000C, ADDR_IRQ=32'h00F4, ADDR_CTRL=32'h0000, ADDR_IRQEN=32'h00F0;
+
+  function new(apb_agent apb);
+    this.apb=apb; logger=new; cov=new;
+  endfunction
+
+  task configure_ctrl(ctrl_item_s ctrl);
+    int unsigned ctrl_val;
+    ctrl_val = (ctrl.ctrl_offset<<8) | ctrl.ctrl_size; 
+    apb.write(ADDR_IRQEN, 32'h7);
+    apb.write(ADDR_CTRL , ctrl_val);
+  endtask
+
+  task log_rx(rx_item_s rx);
+    int unsigned st, iq;
+    apb.read(ADDR_STATUS, st);
+    apb.read(ADDR_IRQ   , iq);
+    logger.log("rx", rx.data, rx.rx_size, rx.rx_offset,
+               32'h0000_0000, -1, -1, st, iq);
+  endtask
+
+  task check_and_log(string phase,
+                     rx_item_s rx,
+                     logic [31:0] tx_d, int tx_sz, int tx_of);
+    int unsigned st, iq;
+    apb.read(ADDR_STATUS, st);
+    apb.read(ADDR_IRQ   , iq);
+    logger.log(phase, rx.data, rx.rx_size, rx.rx_offset, tx_d, tx_sz, tx_of, st, iq);
+    cov.sample(tx_sz, tx_of, rx.rx_size, rx.rx_offset);
+  endtask
+endclass
