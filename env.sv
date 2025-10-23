@@ -259,7 +259,7 @@ module tb_aligner_rand;
   localparam int SW=$clog2(DW/8)+1;
 
   // Clock y reset
-  logic clk=0, reset_n=0; always #5 clk=~clk; // 100 MHz
+  logic clk=0, reset_n=0; always #5 clk=~clk; 
 
   // Interfaces
   apb_if   #(AW,APBDW) apb(clk);
@@ -267,7 +267,7 @@ module tb_aligner_rand;
   md_tx_if #(DW,OW,SW) md_tx(clk);
 
   initial begin
-    md_tx.ready = 1'b1; // always ready
+    md_tx.ready = 1'b1; 
     md_rx.valid = 1'b0; md_rx.data='0; md_rx.size='0; md_rx.offset='0;
   end
 
