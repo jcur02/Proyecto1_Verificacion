@@ -5,7 +5,6 @@ typedef enum { lectura, escritura } tipo_trans;
 class trans_apb #(parameter AW = 16, DW = 32);
     rand bit retardo; // tiempo de retardo en ciclos de reloj que se debe esperar antes de ejecutrar la transaccion
     rand bit [AW-1:0] paddr; // address
-    rand bit pwrite, psel, penable; 
     rand bit [DW-1:0] pwdata // dato a escribir
     bit pready, pslverr
     bit [DW-1:0] prdata // dato leido
@@ -15,12 +14,9 @@ class trans_apb #(parameter AW = 16, DW = 32);
 
     constraint const_retardo {retardo < max_retardo; retardo > 0;}
 
-    function new(int ret = 0, bit[AW-1:0] addr = 0, bit wr = 0, bit sel = 1, bit en = 1, bit [DW-1:0] wdt = 0, bit rdy = 0, bit slver = 0, bit [DW-1:0] rdt = 0, int tmp = 0, tipo_trans tpo = lectura, int max_rtrd = 10);
+    function new(int ret = 0, bit[AW-1:0] addr = 0, bit [DW-1:0] wdt = 0, bit rdy = 0, bit slver = 0, bit [DW-1:0] rdt = 0, int tmp = 0, tipo_trans tpo = lectura, int max_rtrd = 10);
         this.retardo = ret;
         this.paddr = addr;
-        this.pwrite = wr;
-        this.psel = sel;
-        this.penable = en;
         this.pwdata = wdt;
         this.pready = rdy;
         this.pslverr = slver;
@@ -33,9 +29,6 @@ class trans_apb #(parameter AW = 16, DW = 32);
     function clean;
         this.retardo = 0;
         this.paddr = 0;
-        this.pwrite = 0;
-        this.psel = 1;
-        this.penable = 1;
         this.pwdata = 0;
         this.pready = 0;
         this.pslverr = 0;
@@ -86,7 +79,7 @@ class trans_md_rx #(parameter DW = 32);
     endfunction
 
     function void print (string tag="");
-        $display("[%g] %s Tiempo=%g Retardo=%g Dato=0x%h Size=%d Offset=%d", $time, tag, tiempo, this.md_rx_data, this.md_rx_size, this.md_rx_offset);
+        $display("[%g] %s Tiempo=%g Retardo=%g Dato=0x%h Size=%d Offset=%d", $time, tag, tiempo, this.retardo, this.md_rx_data, this.md_rx_size, this.md_rx_offset);
     endfunction
 endclass
 
@@ -124,7 +117,7 @@ class trans_md_tx #(parameter DW = 32);
     endfunction
 
     function void print (string tag="");
-        $display("[%g] %s Tiempo=%g Retardo=%g Dato=0x%h Size=%d Offset=%d", $time, tag, tiempo, this.md_tx_data, this.md_tx_size, this.md_tx_offset);
+        $display("[%g] %s Tiempo=%g Retardo=%g Dato=0x%h Size=%d Offset=%d", $time, tag, tiempo, this.retardo, this.md_tx_data, this.md_tx_size, this.md_tx_offset);
     endfunction
 endclass
 
