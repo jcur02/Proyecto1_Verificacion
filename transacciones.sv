@@ -148,7 +148,7 @@ class trans_sb #(parameter DW=32);
     endfunction
 
     task calc_latencia;
-        this.latencia = this.tiempo_tx - this.tiempo_tx;
+        this.latencia = this.tiempo_tx - this.tiempo_rx;
     endtask
 
     function void print (string tag="");
@@ -156,3 +156,22 @@ class trans_sb #(parameter DW=32);
                                             $time, tag, this.dato_rx, this.dato_tx, this.tiempo_rx, this.tiempo_tx, this.reset, this.latencia, this.status_reg, this.irq_reg);
     endfunction
 endclass
+
+// comandos hacia el scoreboard
+typedef enum {retardo_promedio, reporte} solicitud_sb;
+
+// comandos hacia el agente
+typedef enum {llenad_aleatorio, trans_aleatoria, trans_especifica, sec_trans_aleatorias} instrucciones_agente;
+
+// mailboxes de tipo definido para comunicar interfaces
+typedef mailbox #(trans_apb) trans_apb_mbx;
+
+typedef mailbox #(trans_md_rx) trans_md_rx_mbx;
+
+typedef mailbox #(trans_md_tx) trans_md_tx_mbx;
+
+typedef mailbox #(trans_sb) trans_sb_mbx;
+
+typedef mailbox #(solicitud_sb) comando_test_sb_mbx;
+
+typedef mailbox #(instrucciones_agente) comando_test_agent_mbx;
