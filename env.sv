@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-
+`include "DUT/design.v"
 // Interfaces
 // Interfaz APB para la comunicacion con los registros
 interface apb_if #(parameter AW=16, DW=32) (input logic clk);
